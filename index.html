@@ -715,11 +715,17 @@
       <div class="topbar-title" id="page-title">Panel Principal</div>
       <div class="topbar-sub" id="page-sub">Sistema de Auditoría Financiera</div>
     </div>
-    <div class="status-pill">
-      <div class="status-dot"></div>
-      <span id="status-text">Sin datos cargados</span>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div class="status-pill">
+        <div class="status-dot"></div>
+        <span id="status-text">Sin datos cargados</span>
+      </div>
+      <button class="electron-only" onclick="toggleEncargoPanel()" style="display:none;background:rgba(197,157,51,0.15);border:1px solid var(--ochre-dim);color:var(--ochre-light);border-radius:6px;padding:6px 14px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;">Mis Encargos</button>
+      <button onclick="reiniciarBenAudit()" title="Limpiar todos los datos y reiniciar Ben-Audit"
+        onmouseover="this.style.background='rgba(139,30,45,0.35)';this.style.borderColor='var(--red)';"
+        onmouseout="this.style.background='rgba(139,30,45,0.18)';this.style.borderColor='var(--ochre-dim)';"
+        style="background:rgba(139,30,45,0.18);border:1px solid var(--ochre-dim);color:var(--ochre-light);border-radius:6px;padding:6px 14px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:6px;transition:all 0.2s;">↺ Reiniciar</button>
     </div>
-    <button class="electron-only" onclick="toggleEncargoPanel()" style="display:none;background:rgba(197,157,51,0.15);border:1px solid var(--ochre-dim);color:var(--ochre-light);border-radius:6px;padding:6px 14px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;">Mis Encargos</button>
   </div>
 
   <div class="content">
@@ -4565,10 +4571,18 @@ function updateConsecCols() {
   }
 }
 
-function limpiarTodo() {
-  state = { rawData: [], mappedData: [], columns: [], mapping: {}, muestraN: 0, muestra: [], benfordResults: null, alertas: [] };
+function reiniciarBenAudit() {
+  if (!confirm('¿Está seguro de reiniciar Ben-Audit?\n\nSe borrarán TODOS los datos y análisis cargados: transacciones, muestras, pruebas Benford, Estados Financieros (ESF / E.R.), materialidad y reportes.\n\nEsta acción no se puede deshacer.')) return;
+  // entrar directo al reiniciar (sin re-ver la intro)
+  try { sessionStorage.setItem('benaudit_skipsplash','1'); } catch(e) {}
+  try {
+    state = { rawData: [], mappedData: [], columns: [], mapping: {}, muestraN: 0, muestra: [], benfordResults: null, alertas: [] };
+  } catch(e) {}
   location.reload();
 }
+
+// Mantener compatibilidad: "Nuevo Análisis" también confirma antes de limpiar
+function limpiarTodo() { reiniciarBenAudit(); }
 
 // ═══════════════════════════════════════════
 // UI HELPERS
@@ -4804,6 +4818,20 @@ function sumGroup(group, p) {
   return esfData[group].reduce((s, a) => s + getESFVal(a.id, p), 0);
 }
 
+// Suma por palabra clave del NOMBRE dentro de los grupos dados.
+// Necesario porque las cuentas importadas desde plantilla reciben ids generados
+// (esf1, esf2…), no ids fijos como 'inv' u 'oblig_cp'.
+function esfKwSum(groups, p, kws) {
+  let t = 0;
+  groups.forEach(g => (esfData[g] || []).forEach(a => {
+    const n = normStr(a.label || '');
+    if (kws.some(k => n.includes(k))) t += Math.abs(getESFVal(a.id, p) || 0);
+  }));
+  return t;
+}
+const INV_KW = ['inventario','existencia','mercancia','producto'];
+const OBF_KW = ['obligacion financiera','obligaciones financieras','prestamo','credito','hipoteca','sobregiro','obligacion bancaria','deuda largo','deuda corriente'];
+
 function calcESF() {
   const fmt = v => '$' + v.toLocaleString('es-CO', {minimumFractionDigits:1, maximumFractionDigits:1}) + 'M';
   for (let p = 1; p <= 2; p++) {
@@ -4927,7 +4955,10 @@ function buildESFRatios(p1, p2) {
   const out = document.getElementById('esf-ratios-output'); if (!out) return;
   for(let p=1;p<=2;p++){
     const ac=sumGroup('ac',p),anc=sumGroup('anc',p),ta=ac+anc,pc=sumGroup('pc',p),pnc=sumGroup('pnc',p),tp=pc+pnc,pat=sumGroup('pat',p);
-    const inv=getESFVal('inv',p), obf=getESFVal('oblig_cp',p)+getESFVal('oblig_lp',p);
+    let inv=esfKwSum(['ac'],p,INV_KW), obf=esfKwSum(['pc','pnc'],p,OBF_KW);
+    // compatibilidad con ids fijos (datos ingresados a mano en la estructura original)
+    if(inv===0) inv=getESFVal('inv',p);
+    if(obf===0) obf=getESFVal('oblig_cp',p)+getESFVal('oblig_lp',p);
     window[`_esf_p${p}`]={ac,anc,ta,pc,pnc,tp,pat,inv,obf};
   }
   const d1=window._esf_p1||{},d2=window._esf_p2||{};
@@ -5364,7 +5395,9 @@ function exportarESFExcel() {
   XLSX.utils.book_append_sheet(wb,ws2,'Análisis Vertical');
 
   // ── Hoja 3: Ratios ──
-  const inv1=getESFVal('inv',1),obf1=getESFVal('oblig_cp',1)+getESFVal('oblig_lp',1);
+  let inv1=esfKwSum(['ac'],1,INV_KW),obf1=esfKwSum(['pc','pnc'],1,OBF_KW);
+  if(inv1===0) inv1=getESFVal('inv',1);
+  if(obf1===0) obf1=getESFVal('oblig_cp',1)+getESFVal('oblig_lp',1);
   const ac1=sumGroup('ac',1),pc1=sumGroup('pc',1),tp1=sumGroup('pc',1)+sumGroup('pnc',1),pat1=sumGroup('pat',1),ta1r=ac1+sumGroup('anc',1);
   const ws3=XLSX.utils.aoa_to_sheet([
     ['BEN-AUDIT — Indicadores Financieros'],[`Período: ${p1}`],[],
@@ -5643,15 +5676,18 @@ function renderImportStep1() {
   setTimeout(() => {
     const nameKws = ['cuenta','descripcion','nombre','concepto','rubro','item'];
     const valKws  = ['saldo','valor','monto','importe','debe','haber'];
-    const autoSel = (id, kws) => {
+    const autoSel = (id, kws, exclude) => {
       const sel = document.getElementById(id);
-      if (!sel) return;
-      const idx = s.headers.findIndex(h => kws.some(k => normStr(h).includes(k)));
+      if (!sel) return -1;
+      const idx = s.headers.findIndex((h,i) => (exclude===undefined || i!==exclude) && kws.some(k => normStr(h).includes(k)));
       if (idx >= 0) sel.value = idx;
+      return idx;
     };
     autoSel('ef-col-nombre', nameKws);
-    autoSel('ef-col-p1', [...valKws, '2024','actual','corriente']);
-    autoSel('ef-col-p2', [...valKws, '2023','anterior','base','comp']);
+    const p1i = autoSel('ef-col-p1', ['actual','corriente','2024','2025', ...valKws]);
+    // Período anterior: primero palabras específicas (sin repetir la columna del actual), luego cualquier columna de valor distinta
+    let p2i = autoSel('ef-col-p2', ['anterior','base','comp','previo','2023','2022'], p1i);
+    if (p2i < 0) autoSel('ef-col-p2', valKws, p1i);
   }, 50);
 }
 
@@ -6604,7 +6640,10 @@ function exportMatrizExcel() {
     _sp.addEventListener('mouseleave',function(){ _lupa.style.display='none'; _sp.style.cursor='default'; });
   }
 
-  if(document.readyState!=='loading')start(); else document.addEventListener('DOMContentLoaded',start);
+  var _skipSplash=false;
+  try{ if(sessionStorage.getItem('benaudit_skipsplash')){ sessionStorage.removeItem('benaudit_skipsplash'); _skipSplash=true; } }catch(e){}
+  if(_skipSplash){ var _ss=document.getElementById('sp-splash'); if(_ss){ _ss.classList.add('sp-hide'); _ss.style.display='none'; } }
+  else if(document.readyState!=='loading')start(); else document.addEventListener('DOMContentLoaded',start);
   window.iniciarApp=function(){
     var s=document.getElementById('sp-splash'); if(!s)return;
     s.classList.add('sp-hide');
@@ -6616,4 +6655,3 @@ function exportMatrizExcel() {
 
 </body>
 </html>
-
